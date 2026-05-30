@@ -7,126 +7,160 @@
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <style>
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
             background-color: var(--tg-theme-bg-color, #ffffff);
             color: var(--tg-theme-text-color, #000000);
-            margin: 0;
-            padding: 20px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
+            margin: 0; padding: 20px; display: flex; flex-direction: column; align-items: center;
         }
-        .header {
-            font-size: 20px;
-            font-weight: bold;
-            margin-bottom: 20px;
-            color: var(--tg-theme-link-color, #2481cc);
-        }
+        .header { font-size: 20px; font-weight: bold; margin-bottom: 20px; color: var(--tg-theme-link-color, #2481cc); }
         .btn {
             background-color: var(--tg-theme-button-color, #2481cc);
             color: var(--tg-theme-button-text-color, #ffffff);
-            border: none;
-            padding: 12px 24px;
-            border-radius: 8px;
-            font-size: 16px;
-            cursor: pointer;
-            font-weight: 500;
-            width: 100%;
-            max-width: 280px;
+            border: none; padding: 12px 24px; border-radius: 8px; font-size: 16px; cursor: pointer; font-weight: 500; width: 100%; max-width: 280px;
         }
-        .user-list {
-            width: 100%;
-            max-width: 400px;
-            margin-top: 20px;
-        }
+        .user-list { width: 100%; max-width: 400px; margin-top: 20px; }
         .user-card {
             background: var(--tg-theme-secondary-bg-color, #f4f4f5);
-            padding: 15px;
-            border-radius: 10px;
-            margin-bottom: 10px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
+            padding: 15px; border-radius: 10px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; cursor: pointer;
         }
-        .distance {
-            font-weight: bold;
-            color: var(--tg-theme-link-color, #2481cc);
-        }
-        #status {
-            margin-top: 15px;
-            font-size: 14px;
-            color: #888;
-            text-align: center;
-        }
+        .distance { font-weight: bold; color: var(--tg-theme-link-color, #2481cc); }
+        #status { margin-top: 15px; font-size: 14px; color: #888; text-align: center; }
     </style>
 </head>
 <body>
 
-    <div class="header">Кто рядом со мной?</div>
-    <button class="btn" id="find-btn">Найти людей поблизости</button>
-    <div id="status">Нажмите кнопку, чтобы поделиться геопозицией</div>
+    <div class="header">Реальные люди рядом</div>
+    <button class="btn" id="find-btn">Поделиться геопозицией</button>
+    <div id="status">Нажмите кнопку, чтобы появиться на карте и увидеть других</div>
 
-    <div class="user-list" id="users">
-        </div>
+    <div class="user-list" id="users"></div>
 
     <script>
-        // Инициализация Telegram WebApp
         const tg = window.Telegram.WebApp;
-        tg.expand(); // Расширяем приложение на весь экран
+        tg.expand();
+
+        // --- НАСТРОЙКИ SUPABASE ---
+        const SUPABASE_URL = "https://zidjtsbeqoodvdclhule.supabase.co"; 
+        const SUPABASE_KEY = "ВСТАВЬ_СЮДА_СВОЙ_ANON_PUBLIC_KEY"; // <-- ЗАМЕНИ ЭТОТ ТЕКСТ НА СВОЙ КЛЮЧ ИЗ SUPABASE
+        // ---------------------------
+
+        // Получаем данные текущего пользователя из Telegram
+        const tgUser = tg.initDataUnsafe?.user;
+        const username = tgUser ? `@${tgUser.username}` : `User_${Math.floor(Math.random() * 1000)}`;
+        const firstName = tgUser ? tgUser.first_name : "Аноним";
 
         document.getElementById('find-btn').addEventListener('click', () => {
             const status = document.getElementById('status');
-            status.innerText = "Определяем вашу геопозицию...";
+            status.innerText = "Определяем геопозицию...";
 
             if (!navigator.geolocation) {
-                status.innerText = "Геолокация не поддерживается вашим устройством.";
+                status.innerText = "GPS не поддерживается устройством.";
                 return;
             }
 
-            navigator.geolocation.getCurrentPosition(
-                (position) => {
-                    const lat = position.coords.latitude;
-                    const lon = position.coords.longitude;
-                    
-                    status.innerText = `Ваши координаты получены. Ищем людей...`;
-                    
-                    // Показываем список людей вокруг (пока это демонстрационные данные)
-                    showMockUsers();
-                },
-                () => {
-                    status.innerText = "Не удалось получить доступ к геопозиции. Разрешите доступ в настройках.";
-                }
-            );
+            navigator.geolocation.getCurrentPosition(async (position) => {
+                const lat = position.coords.latitude;
+                const lon = position.coords.longitude;
+                status.innerText = "Обновляем ваши данные в сети...";
+
+                // 1. Сохраняем себя в базу данных Supabase
+                await saveUserToDatabase(username, firstName, lat, lon);
+
+                status.innerText = "Загружаем людей поблизости...";
+                
+                // 2. Получаем всех остальных из базы
+                const allUsers = await getUsersFromDatabase();
+                
+                // 3. Показываем тех, кто рядом
+                renderUsers(lat, lon, allUsers);
+            }, () => {
+                status.innerText = "Ошибка доступа к GPS. Проверьте разрешения.";
+            });
         });
 
-        function showMockUsers() {
-            const usersContainer = document.getElementById('users');
-            usersContainer.innerHTML = ''; // Очистить
+        // Функция отправки данных в Supabase
+        async function saveUserToDatabase(user, name, lat, lon) {
+            const payload = { username: user, first_name: name, latitude: lat, longitude: lon, last_seen: new Date().toISOString() };
+            
+            // Пытаемся обновить, если уже есть, или создать нового (запрос в базу)
+            await fetch(`${SUPABASE_URL}/rest/v1/users`, {
+                method: 'POST',
+                headers: {
+                    'apikey': SUPABASE_KEY,
+                    'Authorization': `Bearer ${SUPABASE_KEY}`,
+                    'Content-Type': 'application/json',
+                    'Prefer': 'resolution=merge-duplicates' // Обновит данные, если username совпадет
+                },
+                body: JSON.stringify(payload)
+            });
+        }
 
-            // Тестовые пользователи для демонстрации
-            const mockUsers = [
-                { name: "Александр", distance: "150 метров", username: "@alex_test" },
-                { name: "Мария", distance: "400 метров", username: "@maria_design" },
-                { name: "Дмитрий", distance: "1.2 км", username: "@dima_code" }
-            ];
+        // Функция получения данных из Supabase
+        async function getUsersFromDatabase() {
+            try {
+                const response = await fetch(`${SUPABASE_URL}/rest/v1/users?select=*`, {
+                    method: 'GET',
+                    headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` }
+                });
+                return await response.json();
+            } catch (e) {
+                return [];
+            }
+        }
 
-            mockUsers.forEach(user => {
+        // Функция расчета расстояния (Формула Гаверсинусов)
+        function getDistance(lat1, lon1, lat2, lon2) {
+            const R = 6371; // Радиус Земли в км
+            const dLat = (lat2 - lat1) * Math.PI / 180;
+            const dLon = (lon2 - lon1) * Math.PI / 180;
+            const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                      Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+            const d = R * c; 
+            return d; // Расстояние в км
+        }
+
+        function renderUsers(myLat, myLon, users) {
+            const container = document.getElementById('users');
+            container.innerHTML = '';
+
+            // Фильтруем (убираем себя) и считаем расстояние для каждого
+            const nearBy = users
+                .filter(u => u.username !== username)
+                .map(u => {
+                    return { ...u, dist: getDistance(myLat, myLon, u.latitude, u.longitude) };
+                })
+                .sort((a, b) => a.dist - b.dist); // Сортируем от ближних к дальним
+
+            if (nearBy.length === 0) {
+                document.getElementById('status').innerText = "Вы первый! Пока никого рядом нет.";
+                return;
+            }
+
+            nearBy.forEach(user => {
                 const card = document.createElement('div');
                 card.className = 'user-card';
+                
+                const distanceText = user.dist < 1 
+                    ? `${Math.round(user.dist * 1000)} м` 
+                    : `${user.dist.toFixed(1)} км`;
+
                 card.innerHTML = `
                     <div>
-                        <strong>${user.name}</strong><br>
+                        <strong>${user.first_name || 'Пользователь'}</strong><br>
                         <span style="font-size:12px; color:#888;">${user.username}</span>
                     </div>
-                    <div class="distance">${user.distance}</div>
+                    <div class="distance">${distanceText}</div>
                 `;
-                // При клике открываем профиль человека в Telegram
                 card.addEventListener('click', () => {
-                    tg.openTelegramLink(`https://t.me/${user.username.replace('@', '')}`);
+                    if(user.username.startsWith('@')) {
+                        tg.openTelegramLink(`https://t.me/${user.username.replace('@', '')}`);
+                    }
                 });
-                usersContainer.appendChild(card);
+                container.appendChild(card);
             });
-            document.getElementById('status').innerText = "Готово! Найдены люди поблизости:";
+
+            document.getElementById('status').innerText = `Готово! Найдено людей: ${nearBy.length}`;
         }
     </script>
 </body>
